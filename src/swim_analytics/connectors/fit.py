@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
@@ -62,6 +63,14 @@ class TimedLength:
     seconds: float
     strokes: int | None
     interval: int | None
+    index: int | None
+
+
+@dataclass(frozen=True)
+class RecordedInterval:
+    number: int
+    active_lengths: int
+    detected_strokes: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True)
@@ -72,9 +81,12 @@ class RecordedWorkout:
     active_count: int
     rest_count: int
     timed_lengths: tuple[TimedLength, ...]
+    intervals: tuple[RecordedInterval, ...]
 
 
-def read_recorded_workout(payload: bytes) -> RecordedWorkout:
+def read_recorded_workout(
+    payload: bytes, confirmed_strokes: Mapping[int, str] | None = None
+) -> RecordedWorkout:
     """Read a single pool session without guessing length membership across sessions."""
     messages = _decode_pool(payload)
     sessions = messages.get("session_mesgs", [])
@@ -85,27 +97,33 @@ def read_recorded_workout(payload: bytes) -> RecordedWorkout:
     lengths = messages.get("length_mesgs", [])
     active = [row for row in lengths if row.get("length_type") == 1]
     intervals: dict[int, int | None] = {}
-    for interval, lap in enumerate(messages.get("lap_mesgs", [])):
+    for lap_index, lap in enumerate(messages.get("lap_mesgs", [])):
         first = lap.get("first_length_index")
         count = lap.get("num_lengths")
         if first is not None and count is not None:
             for index in range(first, first + count):
-                intervals[index] = interval if index not in intervals else None
+                intervals[index] = lap_index if index not in intervals else None
 
     timed = []
+    detected: dict[int, Counter[str]] = {}
     strokes = {0: "freestyle", 2: "breaststroke"}
     for row in active:
         stroke_code = row.get("swim_stroke")
         stroke = strokes.get(stroke_code) if isinstance(stroke_code, int) else None
+        message_index = row.get("message_index")
+        length_index = message_index if isinstance(message_index, int) else None
+        interval = intervals.get(length_index) if length_index is not None else None
+        if interval is not None:
+            detected.setdefault(interval, Counter())[stroke or "other/unknown"] += 1
+        if confirmed_strokes is not None:
+            stroke = confirmed_strokes.get(interval + 1) if interval is not None else None
+
         seconds = row.get("total_timer_time")
         if stroke is not None and seconds is not None and isfinite(seconds) and seconds > 0:
             count = row.get("total_strokes")
-            length_index = row.get("message_index")
             timed.append(TimedLength(
-                stroke,
-                seconds,
-                count if count is not None and count > 0 else None,
-                intervals.get(length_index) if isinstance(length_index, int) else None,
+                stroke, seconds, count if count is not None and count > 0 else None,
+                interval, length_index,
             ))
 
     started_at = session.get("start_time")
@@ -118,4 +136,8 @@ def read_recorded_workout(payload: bytes) -> RecordedWorkout:
         len(active),
         sum(row.get("length_type") == 0 for row in lengths),
         tuple(timed),
+        tuple(
+            RecordedInterval(interval + 1, sum(counts.values()), tuple(sorted(counts.items())))
+            for interval, counts in sorted(detected.items())
+        ),
     )

@@ -16,6 +16,7 @@ from swim_analytics.connectors.personal import (
     TOKEN_PATH,
     PersonalApiError,
     PersonalGarminSource,
+    activity_description,
 )
 from swim_analytics.storage import archived_activity_ids
 
@@ -146,3 +147,16 @@ class PersonalApiTests(unittest.TestCase):
                 path.chmod(0o644)
                 with self.assertRaisesRegex(PersonalApiError, "chmod 600"):
                     _configured_key()
+
+    def test_activity_description_uses_official_details_endpoint(self):
+        with patch(
+            "swim_analytics.connectors.personal._request",
+            side_effect=[
+                b'"fake.token.signature"',
+                b'{"activityId":42,"description":"SWIM: 1:crol:25"}',
+            ],
+        ) as request:
+            self.assertEqual(activity_description("test-key", 42), "SWIM: 1:crol:25")
+        request.assert_called_with(
+            "/activity-service/activity/42", "Bearer fake.token.signature", "GET", MAX_DOWNLOAD
+        )

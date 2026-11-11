@@ -41,6 +41,8 @@ def _request(path: str, authorization: str, method: str, limit: int) -> bytes:
             step = "token exchange"
         elif path.startswith(SEARCH_PATH):
             step = "activity search"
+        elif path.startswith("/activity-service/activity/"):
+            step = "activity details"
         else:
             step = "activity download"
         message = f"Garmin {step} returned HTTP {exc.code}."
@@ -73,6 +75,23 @@ def _access_token(key: str) -> str:
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", token):
         raise PersonalApiError("Garmin's token response did not contain an access token.")
     return token
+
+
+def activity_description(api_key: str, activity_id: int) -> str:
+    token = _access_token(api_key)
+    body = _request(
+        f"/activity-service/activity/{activity_id}", f"Bearer {token}", "GET", MAX_DOWNLOAD
+    )
+    try:
+        details = json.loads(body)
+    except ValueError:
+        raise PersonalApiError("Garmin returned unreadable activity details.") from None
+    if not isinstance(details, dict) or details.get("activityId") != activity_id:
+        raise PersonalApiError("Garmin returned unexpected activity details.")
+    note = details.get("description")
+    if not isinstance(note, str) or not note.strip():
+        raise PersonalApiError("The Garmin activity has no description to import.")
+    return note
 
 
 def _fit_bytes(body: bytes) -> bytes:
